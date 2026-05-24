@@ -2,6 +2,9 @@
 ARIMA, LSTM, Transformer 모델 학습 및 비교
 
 각 모델을 학습하고 예측 결과를 저장합니다.
+
+실행법:
+    python 05_train_models.py
 """
 
 import numpy as np
@@ -69,37 +72,55 @@ def predict_in_batches(model, X_test, device, batch_size=256):
 
 def train_arima(X_train, X_test, y_train, y_test):
     """
-    AR(5) baseline: train 데이터로 AR 계수를 추정하고
-    각 test 윈도우에 벡터화 적용해 1-step 예측으로 방향을 분류합니다.
-
-    - 로그수익률은 이미 정상성이므로 차분(d) 없이 AR(5) 사용
-    - 각 test 샘플의 윈도우 마지막 p개 값으로 1-step 예측 수행
-    - train 시계열 평균을 임계값으로 사용 (MinMax 정규화 공간 기준)
+    개선된 AR baseline:
+    - AR(20) 사용
+    - threshold는 train log_return의 0.59 quantile 사용
     """
+
     from statsmodels.tsa.ar_model import AutoReg
 
-    p = 5
+    p = 20
     log_return_idx = 0
+    threshold_quantile = 0.59
 
-    # 각 train 윈도우 마지막 타임스텝의 log_return으로 시계열 구성
+    # train 시계열 구성
     train_series = X_train[:, -1, log_return_idx]
-    neutral = float(np.mean(train_series))
+
+    # q59 threshold
+    threshold = float(
+        np.quantile(train_series, threshold_quantile)
+    )
 
     try:
-        model = AutoReg(train_series, lags=p, old_names=False)
+        model = AutoReg(
+            train_series,
+            lags=p,
+            old_names=False
+        )
+
         fitted = model.fit()
 
         intercept = fitted.params[0]
-        ar_coefs = fitted.params[1:]  # [phi_1, ..., phi_p], phi_1이 lag-1 계수
+        ar_coefs = fitted.params[1:]
 
-        # test 윈도우 마지막 p개 값: shape (N, p), 오래된 → 최신 순
+        # 각 test sample의 마지막 p개 log_return
         test_windows = X_test[:, -p:, log_return_idx]
 
-        # AR 예측: intercept + phi_p*y(t-p) + ... + phi_1*y(t-1)
+        # 벡터화 AR prediction
         forecasts = intercept + test_windows @ ar_coefs[::-1]
 
-        preds = (forecasts > neutral).astype(int)
+        # threshold 적용
+        preds = (forecasts > threshold).astype(int)
 
+        print(
+            f"  ARIMA/AR: p={p}, threshold=q{int(threshold_quantile * 100)} "
+            f"({threshold:.6f})"
+        )
+        print(
+            f"  Prediction ratio: "
+            f"Down={(preds == 0).mean():.4f}, "
+            f"Up={(preds == 1).mean():.4f}"
+        )
     except Exception as e:
         print(f"ARIMA 학습 실패: {e}")
         preds = np.zeros(len(y_test), dtype=int)
@@ -142,6 +163,7 @@ def train_lstm(
     patience=5
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  사용 디바이스: {device}")
     input_size = X_train.shape[2]
 
     n_val = max(1, int(len(X_train) * 0.1))
@@ -212,15 +234,10 @@ def train_lstm(
 
     model.load_state_dict(best_state)
 
-    # batch 단위 예측
-    preds = predict_in_batches(
-        model,
-        X_test,
-        device,
-        batch_size=batch_size
-    )
+    preds = predict_in_batches(model, X_test, device, batch_size=batch_size)
 
     torch.save(model.state_dict(), os.path.join(MODEL_DIR, "lstm.pt"))
+    print(f"  모델 저장: {os.path.join(MODEL_DIR, 'lstm.pt')}")
 
     return preds
 
@@ -275,6 +292,7 @@ def train_transformer(
     patience=5
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  사용 디바이스: {device}")
     input_size = X_train.shape[2]
 
     n_val = max(1, int(len(X_train) * 0.1))
@@ -345,15 +363,10 @@ def train_transformer(
 
     model.load_state_dict(best_state)
 
-    # batch 단위 예측
-    preds = predict_in_batches(
-        model,
-        X_test,
-        device,
-        batch_size=batch_size
-    )
+    preds = predict_in_batches(model, X_test, device, batch_size=batch_size)
 
     torch.save(model.state_dict(), os.path.join(MODEL_DIR, "transformer.pt"))
+    print(f"  모델 저장: {os.path.join(MODEL_DIR, 'transformer.pt')}")
 
     return preds
 
